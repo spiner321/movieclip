@@ -1,2 +1,4 @@
-file '바난자 수련 1 cut.mkv'
-file '바난자 수련 + 하모닐의 폐 안.mkv'
+file '/mnt/c/Users/lucky/Videos/방송/하늘의 궤적/7-1.mp4'
+file '/mnt/c/Users/lucky/Videos/방송/하늘의 궤적/7-2.mp4'
+file '/mnt/c/Users/lucky/Videos/방송/하늘의 궤적/7-3.mp4'
+file '/mnt/c/Users/lucky/Videos/방송/하늘의 궤적/7-4.mp4'
