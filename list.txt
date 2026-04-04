@@ -1,4 +1,2 @@
-file '/mnt/c/Users/lucky/Videos/방송/하이파이 러쉬/3-1_part1.mp4'
-file '/mnt/c/Users/lucky/Videos/방송/하이파이 러쉬/3-1_part2.mp4'
-file '/mnt/c/Users/lucky/Videos/방송/하이파이 러쉬/3-2.mp4'
-file '/mnt/c/Users/lucky/Videos/방송/하이파이 러쉬/3-3.mp4'
+file '/mnt/c/Users/lucky/Videos/방송/몬스터 헌터 스토리즈 3/5-1.mp4'
+file '/mnt/c/Users/lucky/Videos/방송/몬스터 헌터 스토리즈 3/5-2.mp4'
