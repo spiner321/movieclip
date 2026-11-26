@@ -7,3 +7,6 @@
 *.webm
 *.mpeg
 *.mpg
+__pycache__/
+/exports/
+/MovieClip-Windows/

@@ -1,0 +1,12 @@
+MovieClip Studio · Windows 10/11 x64
+
+MovieClip.exe를 더블클릭하세요. 앱 창에서 영상을 끌어다 놓거나 파일을 열 수 있습니다.
+Windows용 Python과 FFmpeg가 runtime 폴더에 포함되어 있습니다. 폴더를 옮길 때 함께 옮겨 주세요.
+
+결과는 MovieClip.exe와 같은 위치의 exports 폴더에 저장됩니다.
+작업 표시줄 알림 영역의 MovieClip 아이콘으로 편집기와 결과 폴더를 열거나 앱을 종료할 수 있습니다.
+
+Python 3.13.17, Windows embeddable x64 — https://www.python.org/downloads/release/python-31317/
+FFmpeg 9.1 Essentials x64 — https://www.gyan.dev/ffmpeg/builds/
+FFmpeg 소스 코드 — https://github.com/FFmpeg/FFmpeg/commit/74e4393595
+라이선스 문서는 runtime 아래 각 구성 요소의 폴더에 있습니다.
