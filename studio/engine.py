@@ -95,9 +95,11 @@ def frame(clip, position, width):
     return process.stdout
 
 
-def local_path(value):
+def local_path(value, directory=False):
+    prompt = ("저장 폴더의 전체 경로를 입력해 주세요." if directory
+              else "영상 파일을 찾을 수 없습니다. 파일의 전체 경로를 확인해 주세요.")
     if not isinstance(value, str):
-        raise StudioError("영상 파일의 전체 경로를 입력해 주세요.")
+        raise StudioError(prompt)
     value = value.strip().strip('"')
     if os.name != "nt" and re.match(r"^(?:[a-zA-Z]:[\\/]|\\\\)", value):
         if shutil.which("wslpath"):
@@ -107,11 +109,11 @@ def local_path(value):
                 value = result.stdout.rstrip("\r\n")
     try:
         path = Path(value)
-        if path.is_absolute() and path.is_file():
+        if path.is_absolute() and (directory or path.is_file()):
             return path.resolve()
     except (OSError, ValueError):
         pass
-    raise StudioError("영상 파일을 찾을 수 없습니다. 파일의 전체 경로를 확인해 주세요.")
+    raise StudioError(prompt)
 
 
 def export_name(value):
@@ -198,7 +200,8 @@ def render_plan(options, clips, folder):
     base = ["-ss", ff_time(start), *input_args(clip.path), "-t", ff_time(duration),
             "-map", f"0:{clip.video['index']}", *audio_map(clip, options.get("audio"))]
     if mode == "fast":
-        return [output(base + ["-c", "copy"], duration)]
+        # Keep the leading keyframe visible instead of hiding the pre-roll in an MP4 edit list.
+        return [output(base + ["-c", "copy", "-avoid_negative_ts", "make_non_negative"], duration)]
 
     filters = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
     audio = ["-c:a", "aac", "-b:a", "192k"]

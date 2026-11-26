@@ -111,11 +111,15 @@ svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; s
 .library-footer .remove { margin-left: auto; }
 .library-footer .remove:not(:disabled):hover { color: var(--danger); }
 .clip-list:not(:empty) { margin-bottom: 10px; }
+.clip-list:not(:empty) + .drop-zone { min-height: 70px; }
+.clip-list:not(:empty) + .drop-zone .drop-icon { display: none; }
 .clip-row {
   display: flex; align-items: center; gap: 4px; margin-bottom: 4px; border-radius: 8px;
   background: #1c1c25; border: 1px solid transparent;
 }
 .clip-row.selected { border-color: var(--accent-border); background: #252135; }
+.clip-remove { width: 29px; height: 31px; margin-right: 3px; flex: none; }
+.clip-remove:not(:disabled):hover { color: var(--danger); }
 .clip-button {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
   padding: 6px; text-align: left; background: transparent; color: var(--text); border-radius: 7px;
@@ -237,6 +241,9 @@ select {
 .inline-error { color: var(--danger); }
 .output-fields { margin-top: 21px; padding-top: 17px; border-top: 1px solid var(--line); }
 .output-input { display: flex; gap: 6px; }
+.output-directory-label { margin-top: 13px; }
+.output-directory-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.output-input .icon-button { flex: 0 0 37px; height: 37px; }
 .output-input select { width: 69px; flex: none; font-size: 11px; }
 .settings-footer {
   display: flex; align-items: center; justify-content: space-between; gap: 6px;
@@ -252,6 +259,7 @@ select {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   min-height: 31px; padding: 0 16px; color: var(--muted); background: #14141a; border-top: 1px solid #25252e; font-size: 11px;
 }
+.statusbar #show-job { min-height: 24px; margin: 2px 0; }
 .status { display: flex; align-items: center; gap: 6px; }
 .lamp { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
 .lamp.ready { background: #73d5ab; box-shadow: 0 0 7px #63ca9b4a; }

@@ -10,6 +10,7 @@ from zipfile import ZipFile
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON_SHA256 = "9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38"
 FFMPEG_SHA256 = "b9bbbb3acece000cbeec994f856649354e52c773807841e78908374b24d658fd"
+WEBVIEW2_SHA256 = "5ea526bbd728adda0da4d31219267e96460494a427e4894c4e09d9f320f4b9aa"
 
 
 def verify(path, expected):
@@ -18,11 +19,24 @@ def verify(path, expected):
             raise ValueError(f"Unexpected SHA-256 for {path}")
 
 
+def install_webview(package, destination):
+    verify(package, WEBVIEW2_SHA256)
+    with ZipFile(package) as archive:
+        for member in ("lib/net462/Microsoft.Web.WebView2.Core.dll",
+                       "lib/net462/Microsoft.Web.WebView2.WinForms.dll",
+                       "runtimes/win-x64/native/WebView2Loader.dll", "LICENSE.txt", "NOTICE.txt"):
+            relative = Path(member).name
+            if member in ("LICENSE.txt", "NOTICE.txt"):
+                relative = "WebView2-" + relative
+            (destination / relative).write_bytes(archive.read(member))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("python_zip", type=Path)
     parser.add_argument("ffmpeg_zip", type=Path)
     parser.add_argument("launcher_exe", type=Path)
+    parser.add_argument("webview2_package", type=Path)
     parser.add_argument("--destination", type=Path, default=ROOT / "MovieClip-Windows")
     args = parser.parse_args()
     verify(args.python_zip, PYTHON_SHA256)
@@ -30,6 +44,7 @@ def main():
 
     destination = args.destination
     destination.mkdir()
+    install_webview(args.webview2_package, destination)
     python = destination / "runtime" / "python"
     with ZipFile(args.python_zip) as archive:
         archive.extractall(python)

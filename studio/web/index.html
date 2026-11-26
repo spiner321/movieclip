@@ -170,7 +170,15 @@
                 <option value="mp4">MP4</option><option value="mkv">MKV</option>
               </select>
             </div>
-            <p class="field-hint" id="output-hint">프로젝트 폴더의 <code>exports</code>에 저장합니다.</p>
+            <label class="field-label output-directory-label" for="output-directory">저장 폴더</label>
+            <div class="output-input">
+              <input id="output-directory" placeholder="저장 폴더 전체 경로" type="text" autocomplete="off" spellcheck="false" required>
+              <button id="pick-output-directory" class="icon-button bordered" type="button" title="저장 폴더 선택" aria-label="저장 폴더 선택" hidden><svg><use href="#i-folder"/></svg></button>
+            </div>
+            <div class="output-directory-actions">
+              <button id="save-default-output" class="button subtle" type="button" disabled>기본값으로 저장</button>
+              <button id="use-default-output" class="button subtle" type="button" disabled>기본값 사용</button>
+            </div>
           </div>
         </div>
         <div class="settings-footer">
@@ -183,7 +191,7 @@
 
   <footer class="statusbar">
     <div class="status"><span id="engine-lamp" class="lamp"></span><span id="engine-status">FFmpeg 연결 확인 중</span></div>
-    <span>로컬 작업 공간</span>
+    <button id="show-job" class="button subtle" type="button" hidden>내보내기 상태</button>
   </footer>
 
   <div id="drop-overlay" class="drop-overlay" hidden>
@@ -208,7 +216,7 @@
   <dialog id="job-dialog">
     <div class="dialog-heading">
       <h2 id="job-title">영상 내보내기</h2>
-      <button id="close-job" class="icon-button" type="button" aria-label="닫기" hidden><svg><use href="#i-close"/></svg></button>
+      <button id="close-job" class="icon-button" type="button" aria-label="닫기"><svg><use href="#i-close"/></svg></button>
     </div>
     <div id="job-progress-row"><progress id="job-progress" max="100" value="0"></progress><span id="job-percent">0%</span></div>
     <p id="job-message" class="field-hint" role="status"></p>

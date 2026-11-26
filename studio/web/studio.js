@@ -9,15 +9,18 @@ const track = $("timeline-track");
 const preview = $("preview-media");
 const pathDialog = $("path-dialog");
 const jobDialog = $("job-dialog");
+const webview = window.chrome?.webview;
+const nativeDrop = typeof webview?.postMessageWithAdditionalObjects === "function";
 
 const state = {
   ready: false, importing: false, clips: [], selected: null, excluded: new Set(),
   mode: "cut", ranges: new Map(), audio: new Map(), explicitName: false,
   position: 0, frameMode: false, loaded: false, job: null, sending: false,
+  removing: new Set(), defaultOutput: "", savingDefault: false, nativeFilePicker: false,
 };
 const modeNames = {cut: "자르기", concat: "이어 붙이기", shorts: "쇼츠"};
 const cutHints = {
-  fast: "재인코딩 없이 저장합니다. 시작점은 키프레임에 맞춰질 수 있어요.",
+  fast: "재인코딩 없이 저장합니다. 지정한 시작점 앞의 키프레임부터 포함될 수 있어요.",
   precise: "지정한 시간에 맞춰 자르고 H.264로 다시 인코딩합니다.",
   split: "지정 위치의 앞뒤를 각각 저장합니다. 뒷부분의 시작점은 키프레임에 맞춰질 수 있어요.",
 };
@@ -100,7 +103,7 @@ function running() {
 function renderLibrary() {
   const list = $("clip-list");
   const focusedId = list.contains(document.activeElement) ? document.activeElement.dataset.clipId : null;
-  const focusType = document.activeElement.type;
+  const focusAction = document.activeElement.dataset.clipAction;
   list.replaceChildren();
   for (const item of state.clips) {
     const active = state.selected === item.id;
@@ -109,6 +112,7 @@ function renderLibrary() {
     button.type = "button";
     button.title = item.name;
     button.dataset.clipId = item.id;
+    button.dataset.clipAction = "select";
     button.setAttribute("aria-pressed", String(active));
     const thumb = element("span", "thumb");
     if (item.thumbnail) {
@@ -130,6 +134,7 @@ function renderLibrary() {
       const checkbox = element("input", "clip-checkbox");
       checkbox.type = "checkbox";
       checkbox.dataset.clipId = item.id;
+      checkbox.dataset.clipAction = "include";
       checkbox.checked = !state.excluded.has(item.id);
       checkbox.setAttribute("aria-label", item.name + " 이어 붙이기에 포함");
       checkbox.addEventListener("change", () => {
@@ -139,17 +144,26 @@ function renderLibrary() {
       });
       row.append(checkbox);
     }
+    const remove = element("button", "icon-button clip-remove");
+    remove.type = "button";
+    remove.title = "목록에서 제거";
+    remove.dataset.clipId = item.id;
+    remove.dataset.clipAction = "remove";
+    remove.setAttribute("aria-label", item.name + " 목록에서 제거");
+    remove.disabled = state.removing.has(item.id);
+    remove.append(icon("trash"));
+    remove.addEventListener("click", () => removeClip(item.id));
+    row.append(remove);
     list.append(row);
     if (focusedId === item.id) {
-      (focusType === "checkbox" ? row.querySelector("input") : button)?.focus({preventScroll: true});
+      row.querySelector('[data-clip-action="' + focusAction + '"]')?.focus({preventScroll: true});
     }
   }
   $("clip-count").textContent = state.clips.length;
-  $("drop-zone").hidden = state.clips.length > 0;
   const index = state.clips.findIndex((item) => item.id === state.selected);
   $("move-up").disabled = index <= 0;
   $("move-down").disabled = index < 0 || index >= state.clips.length - 1;
-  $("remove-clip").disabled = index < 0 || (running() && state.job?.clips.includes(state.selected));
+  $("remove-clip").disabled = index < 0 || state.removing.has(state.selected);
 }
 
 function selectClip(id) {
@@ -356,8 +370,12 @@ function renderEstimate() {
   $("estimate-label").textContent = split ? "앞부분 / 뒷부분" : concat && count ? "예상 길이 · " + count + "개" : "예상 길이";
   $("estimate").textContent = estimate === null ? "—" : split
     ? formatTime(range.start, false) + " / " + formatTime(estimate, false) : formatTime(estimate);
+  const output = $("output-directory").value.trim();
+  const changed = output !== state.defaultOutput;
+  $("save-default-output").disabled = !state.defaultOutput || state.savingDefault || !output || !changed;
+  $("use-default-output").disabled = !state.defaultOutput || state.savingDefault || !changed;
   $("export-button").disabled = !state.ready || state.importing || running() ||
-    !(concat ? count >= 2 : hasSelection) || !$("filename").value.trim();
+    !(concat ? count >= 2 : hasSelection) || !$("filename").value.trim() || !output;
 }
 
 function keepRange(event) {
@@ -412,7 +430,7 @@ function upload(file, update) {
   });
 }
 
-async function importFiles(files) {
+async function importFiles(files, fromPaths = false) {
   if (!state.ready || state.importing || !files.length) return;
   setImporting(true);
   const status = $("import-progress");
@@ -421,13 +439,16 @@ async function importFiles(files) {
   status.hidden = false;
   try {
     for (const file of files) {
-      description.textContent = file.name + " 가져오는 중";
-      progress.value = 0;
+      description.textContent = file.name + (fromPaths ? " 분석 중" : " 로컬 복사 중");
+      if (fromPaths) progress.removeAttribute("value");
+      else progress.value = 0;
       try {
-        addClip(await upload(file, (fraction) => {
-          progress.value = Math.round(fraction * 100);
-          if (fraction === 1) description.textContent = file.name + " 분석 중";
-        }));
+        const item = fromPaths ? await api("/api/open", {path: file.path}) :
+          await upload(file, (fraction) => {
+            progress.value = Math.round(fraction * 100);
+            if (fraction === 1) description.textContent = file.name + " 분석 중";
+          });
+        addClip(item);
       } catch (error) {
         notify(file.name + " · " + error.message, true);
       }
@@ -436,6 +457,29 @@ async function importFiles(files) {
     status.hidden = true;
     setImporting(false);
   }
+}
+
+async function openFiles() {
+  if (!state.ready || state.importing) return;
+  if (!state.nativeFilePicker) {
+    $("file-input").click();
+    return;
+  }
+  setImporting(true);
+  let paths = [];
+  try {
+    const result = await api("/api/pick-files", {});
+    paths = result.paths;
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    setImporting(false);
+  }
+  await importPaths(paths);
+}
+
+function importPaths(paths) {
+  return importFiles(paths.map((path) => ({path, name: path.split(/[\\/]/).pop()})), true);
 }
 
 function moveClip(change) {
@@ -447,31 +491,42 @@ function moveClip(change) {
   renderLibrary();
 }
 
-async function removeClip() {
-  const id = state.selected;
-  if (!id) return;
+async function removeClip(id) {
+  if (!id || state.removing.has(id)) return;
+  state.removing.add(id);
   try {
     await api("/api/remove", {id});
     const index = state.clips.findIndex((item) => item.id === id);
     if (index < 0) return;
+    const restoreFocus = document.activeElement.dataset.clipId === id;
     state.clips.splice(index, 1);
     state.excluded.delete(id);
     state.ranges.delete(id);
+    for (const mode of Object.keys(modeNames)) state.audio.delete(id + mode);
     if (state.selected === id) selectClip(state.clips[Math.min(index, state.clips.length - 1)]?.id || null);
     else {
       renderLibrary();
       renderEstimate();
     }
+    if (restoreFocus) {
+      const next = $("clip-list").querySelector(".selected .clip-button");
+      (next || $("open-button")).focus({preventScroll: true});
+    }
+    notify("목록에서 제거했습니다.");
   } catch (error) {
+    state.removing.delete(id);
+    renderLibrary();
     notify(error.message, true);
+  } finally {
+    state.removing.delete(id);
   }
 }
 
-function showJob(job) {
+function showJob(job, open = false) {
   const changed = state.job?.id !== job.id || state.job?.status !== job.status;
   state.job = job;
   clearTimeout(pollTimer);
-  if (!jobDialog.open) jobDialog.showModal();
+  if (open && !jobDialog.open) jobDialog.showModal();
   const busy = job.status === "running";
   const done = job.status === "done";
   $("job-title").textContent = busy ? "영상 내보내는 중" : done ? "내보내기 완료" :
@@ -479,10 +534,11 @@ function showJob(job) {
   $("job-progress-row").hidden = !busy && !done;
   $("job-progress").value = job.progress;
   $("job-percent").textContent = job.progress + "%";
-  $("close-job").hidden = busy;
   $("cancel-job").hidden = !busy;
+  $("show-job").hidden = false;
+  $("show-job").textContent = busy ? "내보내는 중 · " + job.progress + "%" : $("job-title").textContent;
   $("job-message").textContent = busy ? "FFmpeg가 영상을 처리하고 있습니다." :
-    done ? "exports 폴더에 저장했습니다." : job.error;
+    done ? "저장 폴더\n" + job.output_dir : job.error;
   $("job-message").classList.toggle("inline-error", job.status === "failed");
   $("output-files").replaceChildren(...job.files.map((file) => {
     const link = element("a", "button secondary");
@@ -504,6 +560,7 @@ async function pollJob() {
     } else {
       state.job = null;
       jobDialog.close();
+      $("show-job").hidden = true;
       renderEstimate();
       notify("편집기가 다시 시작되었습니다. 영상을 다시 열어 주세요.", true);
     }
@@ -519,7 +576,7 @@ async function exportVideo(event) {
   const mode = editingMode();
   const audio = $("audio").value;
   const options = {
-    mode, format: $("file-format").value, name: $("filename").value,
+    mode, format: $("file-format").value, name: $("filename").value, output_dir: $("output-directory").value,
     clips: mode === "concat" ? selectedForConcat().map((item) => item.id) : [state.selected],
     audio: /^\d+$/.test(audio) ? Number(audio) : audio,
   };
@@ -531,7 +588,7 @@ async function exportVideo(event) {
   renderEstimate();
   try {
     $("cancel-job").disabled = false;
-    showJob(await api("/api/export", options));
+    showJob(await api("/api/export", options), true);
   } catch (error) {
     notify(error.message, true);
   } finally {
@@ -554,13 +611,50 @@ $("filename").addEventListener("input", (event) => {
   state.explicitName = Boolean(event.target.value.trim());
   renderEstimate();
 });
+$("output-directory").addEventListener("input", renderEstimate);
+$("use-default-output").addEventListener("click", () => {
+  $("output-directory").value = state.defaultOutput;
+  renderEstimate();
+});
+$("save-default-output").addEventListener("click", async () => {
+  const field = $("output-directory");
+  const path = field.value;
+  state.savingDefault = true;
+  renderEstimate();
+  try {
+    const result = await api("/api/default-output", {path});
+    state.defaultOutput = result.path;
+    $("use-default-output").title = result.path;
+    if (field.value === path) field.value = result.path;
+    notify("기본 저장 폴더를 변경했습니다.");
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    state.savingDefault = false;
+    renderEstimate();
+  }
+});
+$("pick-output-directory").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const field = $("output-directory");
+    const result = await api("/api/pick-folder", {path: field.value});
+    if (result.path) field.value = result.path;
+    renderEstimate();
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 $("start-time").addEventListener("input", keepRange);
 $("end-time").addEventListener("input", keepRange);
 $("set-start").addEventListener("click", () => setPoint("start-time"));
 $("set-end").addEventListener("click", () => setPoint("end-time"));
 $("move-up").addEventListener("click", () => moveClip(-1));
 $("move-down").addEventListener("click", () => moveClip(1));
-$("remove-clip").addEventListener("click", removeClip);
+$("remove-clip").addEventListener("click", () => removeClip(state.selected));
 $("play").addEventListener("click", togglePlayback);
 $("jump-start").addEventListener("click", () => seek(0));
 $("jump-end").addEventListener("click", () => seek(clip()?.duration || 0));
@@ -598,7 +692,7 @@ video.addEventListener("error", () => {
 });
 new ResizeObserver(resizePreview).observe($("monitor"));
 
-for (const id of ["open-button", "drop-zone"]) $(id).addEventListener("click", () => $("file-input").click());
+for (const id of ["open-button", "drop-zone"]) $(id).addEventListener("click", openFiles);
 $("file-input").addEventListener("change", (event) => {
   const files = Array.from(event.target.files);
   event.target.value = "";
@@ -636,6 +730,18 @@ $("path-form").addEventListener("submit", async (event) => {
 
 let dragDepth = 0;
 const overlay = $("drop-overlay");
+let dropTimer;
+if (nativeDrop) {
+  $("drop-zone").querySelector("small").textContent = "원본 경로에서 바로 열기";
+  webview.addEventListener("message", (event) => {
+    if (event.data?.type !== "movieclip-drop" || !dropTimer) return;
+    clearTimeout(dropTimer);
+    dropTimer = undefined;
+    setImporting(false);
+    if (event.data.paths.length) importPaths(event.data.paths);
+    else notify("탐색기에서 영상 파일을 다시 놓아 주세요.", true);
+  });
+}
 document.addEventListener("dragenter", (event) => {
   if (!event.dataTransfer.types.includes("Files")) return;
   event.preventDefault();
@@ -657,7 +763,24 @@ document.addEventListener("drop", (event) => {
   event.preventDefault();
   dragDepth = 0;
   overlay.hidden = true;
-  if (!jobDialog.open && !pathDialog.open) importFiles(Array.from(event.dataTransfer.files));
+  if (!state.ready || state.importing || jobDialog.open || pathDialog.open) return;
+  const files = Array.from(event.dataTransfer.files);
+  if (!files.length) return;
+  if (!nativeDrop) {
+    importFiles(files);
+    return;
+  }
+  try {
+    webview.postMessageWithAdditionalObjects("movieclip-drop", files);
+    setImporting(true);
+    dropTimer = setTimeout(() => {
+      dropTimer = undefined;
+      setImporting(false);
+      notify("파일 경로를 받지 못했습니다. 탐색기에서 영상을 다시 놓아 주세요.", true);
+    }, 5000);
+  } catch {
+    notify("파일 경로를 읽을 수 없습니다. 탐색기에서 영상을 다시 놓아 주세요.", true);
+  }
 });
 window.addEventListener("blur", () => {
   dragDepth = 0;
@@ -666,9 +789,7 @@ window.addEventListener("blur", () => {
 
 $("export-form").addEventListener("submit", exportVideo);
 $("close-job").addEventListener("click", () => jobDialog.close());
-jobDialog.addEventListener("cancel", (event) => {
-  if (running()) event.preventDefault();
-});
+$("show-job").addEventListener("click", () => jobDialog.showModal());
 $("cancel-job").addEventListener("click", async () => {
   $("cancel-job").disabled = true;
   try {
@@ -682,7 +803,11 @@ document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || pathDialog.open || jobDialog.open) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
     event.preventDefault();
-    if (!$("open-button").disabled) $("file-input").click();
+    openFiles();
+  } else if (event.key === "Delete" && event.target.closest(".library") &&
+             !event.target.closest("input, select, textarea")) {
+    event.preventDefault();
+    removeClip(event.target.dataset.clipId || state.selected);
   } else if (event.code === "Space" && !event.target.closest("button, input, select, textarea, a") &&
              !$("play").disabled) {
     event.preventDefault();
@@ -698,12 +823,17 @@ async function init() {
   try {
     const workspace = await api("/api/state");
     state.ready = workspace.ready;
+    state.nativeFilePicker = workspace.file_picker;
     state.clips = workspace.clips;
+    state.defaultOutput = workspace.default_output_dir;
+    $("output-directory").value = state.defaultOutput;
+    $("use-default-output").title = state.defaultOutput;
+    $("pick-output-directory").hidden = !workspace.folder_picker;
     if (state.clips.length) selectClip(state.clips[0].id);
     else renderLibrary();
     $("engine-status").textContent = state.ready ? "FFmpeg 연결됨" : "FFmpeg 설치 필요";
     $("engine-lamp").classList.add(state.ready ? "ready" : "error");
-    if (workspace.job?.status === "running" || workspace.job?.status === "done") showJob(workspace.job);
+    if (workspace.job) showJob(workspace.job);
   } catch {
     $("engine-lamp").classList.add("error");
     $("engine-status").textContent = "편집기 연결 끊김";

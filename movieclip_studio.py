@@ -4,6 +4,7 @@ import contextlib
 import hmac
 import json
 import mimetypes
+import os
 import re
 import secrets
 import shutil
@@ -31,14 +32,31 @@ MEDIA_TYPES = {".mkv": "video/x-matroska", ".mov": "video/quicktime", ".m4v": "v
 CHUNK = 1024 * 1024
 
 
+def settings_path():
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        return base / "MovieClip Studio" / "settings.json"
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "movieclip-studio" / "settings.json"
+
+
 class Workspace:
-    def __init__(self, input_dir, output_dir):
+    def __init__(self, input_dir, output_dir, settings_file):
         self.input_dir = input_dir
-        self.output_dir = output_dir
+        self.settings_file = settings_file
+        self.default_output_dir = output_dir
+        self.last_output_dir = None
+        with contextlib.suppress(OSError, ValueError, AttributeError, StudioError):
+            saved = json.loads(settings_file.read_text(encoding="utf-8"))
+            self.default_output_dir = local_path(saved.get("output_dir"), directory=True)
+        self.folder_picker = os.environ.get("MOVIECLIP_LAUNCHER") if os.name == "nt" else None
+        self.file_picker = self.folder_picker if os.environ.get("MOVIECLIP_OPEN_DIALOG") == "1" else None
         self.token = secrets.token_urlsafe(32)
         self.ready = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
         self.lock = threading.RLock()
         self.clips = {}
+        self.clip_readers = {}
+        self.removed_clips = {}
         self.job = None
         self.process = None
         self.worker = None
@@ -84,18 +102,67 @@ class Workspace:
 
     def remove(self, clip_id):
         with self.lock:
+            clip = self.clips.pop(clip_id, None)
+            if clip:
+                self.removed_clips[clip_id] = clip.workspace
+        self.clean_removed_clips()
+
+    @contextlib.contextmanager
+    def use_clip(self, clip_id):
+        with self.lock:
             clip = self.clips.get(clip_id)
-            if not clip:
-                return
-            if self.job and self.job["status"] == "running" and clip_id in self.job["clips"]:
-                raise StudioError("내보내기가 끝난 뒤 이 영상을 제거할 수 있습니다.")
-            del self.clips[clip_id]
-        shutil.rmtree(clip.workspace, ignore_errors=True)
+            if clip:
+                self.clip_readers[clip_id] = self.clip_readers.get(clip_id, 0) + 1
+        try:
+            yield clip
+        finally:
+            if clip:
+                with self.lock:
+                    self.clip_readers[clip_id] -= 1
+                    if not self.clip_readers[clip_id]:
+                        del self.clip_readers[clip_id]
+                self.clean_removed_clips()
+
+    def clean_removed_clips(self):
+        with self.lock:
+            active = self.job["clips"] if self.job and self.job["status"] == "running" else ()
+            released = [key for key in self.removed_clips if key not in self.clip_readers and key not in active]
+            folders = [self.removed_clips.pop(key) for key in released]
+        for folder in folders:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    def set_default_output(self, value):
+        output_dir = local_path(value, directory=True)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryFile(dir=output_dir):
+                pass
+        except OSError as error:
+            raise StudioError("선택한 폴더에 저장할 수 없습니다. 폴더 경로와 쓰기 권한을 확인해 주세요.") from error
+        with self.lock:
+            draft = None
+            try:
+                self.settings_file.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.settings_file.parent,
+                                                 delete=False) as file:
+                    draft = Path(file.name)
+                    json.dump({"output_dir": str(output_dir)}, file, ensure_ascii=False)
+                draft.replace(self.settings_file)
+            except OSError as error:
+                raise StudioError("기본 폴더 설정을 저장할 수 없습니다. 설정 폴더의 쓰기 권한을 확인해 주세요.") from error
+            finally:
+                if draft:
+                    with contextlib.suppress(OSError):
+                        draft.unlink(missing_ok=True)
+            self.default_output_dir = output_dir
+        return str(output_dir)
 
     def state(self):
         with self.lock:
             return {"ready": self.ready, "clips": [clip.describe() for clip in self.clips.values()],
-                    "job": self.job_status()}
+                    "job": self.job_status(), "output_dir": str(self.last_output_dir or self.default_output_dir),
+                    "default_output_dir": str(self.default_output_dir),
+                    "folder_picker": bool(self.folder_picker), "file_picker": bool(self.file_picker)}
 
     def job_status(self):
         with self.lock:
@@ -112,8 +179,12 @@ class Workspace:
             if len(set(ids)) != len(ids):
                 raise StudioError("동일한 영상을 한 번만 선택해 주세요.")
             clips = [self.clips[key] for key in ids]
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            staging = tempfile.TemporaryDirectory(prefix=".render-", dir=self.output_dir)
+            output_dir = local_path(options.get("output_dir", str(self.default_output_dir)), directory=True)
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                staging = tempfile.TemporaryDirectory(prefix=".render-", dir=output_dir)
+            except OSError as error:
+                raise StudioError("선택한 폴더에 저장할 수 없습니다. 폴더 경로와 쓰기 권한을 확인해 주세요.") from error
             try:
                 plan = render_plan(options, clips, Path(staging.name))
             except Exception:
@@ -121,12 +192,12 @@ class Workspace:
                 raise
             self.cancelled = False
             self.job = {"id": uuid.uuid4().hex, "status": "running", "progress": 0,
-                        "mode": options["mode"], "clips": ids, "files": []}
-            self.worker = threading.Thread(target=self.run_job, args=(staging, plan), daemon=True)
+                        "mode": options["mode"], "clips": ids, "files": [], "output_dir": str(output_dir)}
+            self.worker = threading.Thread(target=self.run_job, args=(staging, plan, output_dir), daemon=True)
             self.worker.start()
             return self.job_status()
 
-    def run_job(self, staging, plan):
+    def run_job(self, staging, plan, output_dir):
         try:
             with staging:
                 total = sum(duration for _, _, duration in plan)
@@ -145,12 +216,13 @@ class Workspace:
                 with self.lock:
                     if self.cancelled:
                         raise StudioError("내보내기를 취소했습니다.")
-                    paths = publish([path for _, path, _ in plan], self.output_dir)
+                    paths = publish([path for _, path, _ in plan], output_dir)
                     files = []
                     for path in paths:
                         key = uuid.uuid4().hex
                         self.outputs[key] = path
                         files.append({"name": path.name, "url": f"/output/{key}"})
+                    self.last_output_dir = output_dir
                     self.job.update(status="done", progress=100, files=files)
         except (StudioError, OSError, subprocess.SubprocessError) as error:
             with self.lock:
@@ -160,6 +232,7 @@ class Workspace:
             with self.lock:
                 if self.worker is threading.current_thread():
                     self.process = None
+            self.clean_removed_clips()
 
     def manage_process(self, process):
         with self.lock:
@@ -236,23 +309,13 @@ class StudioHandler(BaseHTTPRequestHandler):
             self.send_json(self.app.state())
         elif path == "/api/job":
             self.send_json(self.app.job_status())
-        elif match := re.fullmatch(r"/clip/([a-f0-9]{32})/(media|thumbnail|frame)", path):
+        elif path == "/api/output-directory":
             with self.app.lock:
-                clip = self.app.clips.get(match[1])
-            if not clip:
-                self.not_found()
-            elif match[2] == "media":
-                kind = MEDIA_TYPES.get(clip.path.suffix.lower()) or mimetypes.guess_type(clip.path)[0]
-                self.stream_file(clip.path, kind if kind and kind.startswith("video/") else "application/octet-stream")
-            elif match[2] == "thumbnail":
-                self.stream_file(clip.workspace / "thumbnail.jpg", "image/jpeg")
-            else:
-                position = seconds(parse_qs(url.query).get("t", [0])[0])
-                still = frame(clip, max(0, min(position, clip.duration - min(0.15, clip.duration / 2))), 960)
-                if still:
-                    self.send_bytes(still, "image/jpeg")
-                else:
-                    self.not_found()
+                directory = str(self.app.last_output_dir or self.app.default_output_dir)
+            self.send_bytes(directory.encode("utf-8"), "text/plain; charset=utf-8")
+        elif match := re.fullmatch(r"/clip/([a-f0-9]{32})/(media|thumbnail|frame)", path):
+            with self.app.use_clip(match[1]) as clip:
+                self.get_clip_media(clip, match[2], url.query)
         elif match := re.fullmatch(r"/output/([a-f0-9]{32})", path):
             with self.app.lock:
                 file = self.app.outputs.get(match[1])
@@ -263,6 +326,24 @@ class StudioHandler(BaseHTTPRequestHandler):
         else:
             self.not_found()
 
+    def get_clip_media(self, clip, kind, query):
+        if not clip:
+            self.not_found()
+        elif kind == "media":
+            media_type = MEDIA_TYPES.get(clip.path.suffix.lower()) or mimetypes.guess_type(clip.path)[0]
+            self.connection.settimeout(30)
+            self.stream_file(clip.path, media_type if media_type and media_type.startswith("video/")
+                             else "application/octet-stream")
+        elif kind == "thumbnail":
+            self.stream_file(clip.workspace / "thumbnail.jpg", "image/jpeg")
+        else:
+            position = seconds(parse_qs(query).get("t", [0])[0])
+            still = frame(clip, max(0, min(position, clip.duration - min(0.15, clip.duration / 2))), 960)
+            if still:
+                self.send_bytes(still, "image/jpeg")
+            else:
+                self.not_found()
+
     def post(self, path):
         if path == "/api/upload":
             name = Path(unquote(self.headers.get("X-File-Name", ""))).name
@@ -272,7 +353,8 @@ class StudioHandler(BaseHTTPRequestHandler):
             self.connection.settimeout(120)
             self.send_json(self.app.import_clip(name, stream=self.rfile, length=length), 201)
             return
-        if path not in ("/api/open", "/api/remove", "/api/export", "/api/cancel"):
+        if path not in ("/api/open", "/api/remove", "/api/export", "/api/cancel",
+                        "/api/pick-folder", "/api/pick-files", "/api/default-output"):
             self.not_found()
             return
         length = self.content_length()
@@ -297,6 +379,24 @@ class StudioHandler(BaseHTTPRequestHandler):
         elif path == "/api/cancel":
             self.app.cancel_job(data.get("id"))
             self.send_json(self.app.job_status())
+        elif path == "/api/default-output":
+            self.send_json({"path": self.app.set_default_output(data.get("path"))})
+        elif path == "/api/pick-files":
+            if not self.app.file_picker:
+                raise StudioError("Windows 파일 선택기를 사용할 수 없습니다.")
+            result = subprocess.run([self.app.file_picker, "--pick-files"], capture_output=True,
+                                    check=True, timeout=600)
+            self.send_json({"paths": result.stdout.decode("utf-8").split("\n") if result.stdout else []})
+        elif path == "/api/pick-folder":
+            if not self.app.folder_picker:
+                raise StudioError("저장 폴더의 전체 경로를 직접 입력해 주세요.")
+            try:
+                initial = local_path(data.get("path"), directory=True)
+            except StudioError:
+                initial = self.app.last_output_dir or self.app.default_output_dir
+            result = subprocess.run([self.app.folder_picker, "--pick-folder", str(initial)],
+                                    capture_output=True, check=True, timeout=600)
+            self.send_json({"path": result.stdout.decode("utf-8").strip() or None})
 
     def content_length(self):
         value = self.headers.get("Content-Length", "")
@@ -376,6 +476,7 @@ def main():
     parser = argparse.ArgumentParser(description="MovieClip 로컬 영상 편집기")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "exports")
+    parser.add_argument("--settings-file", type=Path, default=settings_path())
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--exit-with-stdin", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -385,7 +486,7 @@ def main():
 
     signal.signal(signal.SIGTERM, stop)
     with tempfile.TemporaryDirectory(prefix="movieclip-") as directory:
-        app = Workspace(Path(directory), args.output_dir.resolve())
+        app = Workspace(Path(directory), args.output_dir.resolve(), args.settings_file)
         with ThreadingHTTPServer(("127.0.0.1", args.port), StudioHandler) as server:
             server.app = app
             server.verbose = args.verbose
